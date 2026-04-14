@@ -1,14 +1,14 @@
 ---
 name: pp
-description: Use pp, the Microsoft Power Platform CLI/MCP/UI, for account auth, environment management, Dataverse, Power Automate, Microsoft Graph, BAP, Power Apps, Canvas Authoring, jq-filtered API requests, and Power Platform investigation workflows. Trigger when the user mentions pp, Power Platform APIs, Dataverse, Power Automate flows, Canvas apps, Power Apps authoring, or asks to query/inspect/mutate a configured environment.
+description: Use pp, the Microsoft Power Platform CLI/MCP/UI, for account auth, environment management, Dataverse, Power Automate, Microsoft Graph, SharePoint REST, BAP, Power Apps, Canvas Authoring, jq-filtered API requests, and Power Platform investigation workflows. Trigger when the user mentions pp, Power Platform APIs, Dataverse, Power Automate flows, SharePoint REST, Canvas apps, Power Apps authoring, or asks to query/inspect/mutate a configured environment.
 ---
 
 # pp
 
 `pp` is a Node 22+ CLI, library, MCP server, and localhost UI for Microsoft
 Power Platform work. It provides authenticated requests against Dataverse, Power
-Automate, Microsoft Graph, BAP, Power Apps, and the internal Canvas Authoring
-service.
+Automate, Microsoft Graph, SharePoint REST, BAP, Power Apps, and the internal
+Canvas Authoring service.
 
 Source repo on this machine: `/home/calluma/projects/pp`.
 
@@ -126,8 +126,8 @@ pp dv /WhoAmI --env <alias> --method GET
 General form:
 
 ```sh
-pp request [dv|flow|graph|bap|powerapps|canvas-authoring|custom] <path|url> --env <alias>
-pp <api> <path|url> --env <alias>
+pp request [dv|flow|graph|sharepoint|bap|powerapps|canvas-authoring|custom] <path|url> [--env <alias>|--account <account>]
+pp <api> <path|url> [--env <alias>|--account <account>]
 ```
 
 Common flags:
@@ -142,14 +142,21 @@ Common flags:
 - `--jq EXPR`
 - `--format json|yaml|text`
 - `--read`
+- `--via-ui`
+- `--temp-token NAME`
 - `--no-interactive-auth`
 
 `--jq` runs in-process with jq-wasm; use API-native `$select`, `$filter`, and
 `$top` first, then use `--jq` to reshape returned JSON.
 
 Absolute URLs are allowed for all APIs. If no API is specified, pp auto-detects
-Graph, Power Apps, Canvas Authoring, BAP, Flow, Dataverse API URLs, or falls
-back to `custom` for other absolute URLs and `dv` for relative paths.
+Graph, SharePoint, Power Apps, Canvas Authoring, BAP, Flow, Dataverse API URLs,
+or falls back to `custom` for other absolute URLs and `dv` for relative paths.
+
+Dataverse, Flow, BAP, Power Apps, Canvas Authoring, and custom requests are
+environment-scoped and require `--env`. Graph and SharePoint are account-scoped:
+use `--account` directly, or pass `--env` as a shorthand for the environment's
+configured account.
 
 ## Dataverse
 
@@ -208,11 +215,15 @@ triggers may show useful state in
 created. Action `inputsLink` and `outputsLink` URLs are pre-signed; fetch them
 directly without auth headers.
 
-## Graph, BAP, And Power Apps
+## Graph, SharePoint, BAP, And Power Apps
 
 ```sh
 pp graph /me --env <alias>
+pp graph /me --account <account>
 pp graph /users --env <alias> --query '$top=5'
+
+pp sp https://contoso.sharepoint.com/sites/site/_api/web --account <account>
+pp sharepoint https://contoso.sharepoint.com/sites/site/_api/web/lists --env <alias>
 
 pp bap /environments --env <alias>
 pp bap /environments/<maker-environment-id> --env <alias>
@@ -223,7 +234,10 @@ pp powerapps /connections --env <alias>
 ```
 
 Graph relative paths are rooted at `/v1.0` unless the path starts with
-`/v1.0/` or `/beta/`. BAP paths are rooted at
+`/v1.0/` or `/beta/`. SharePoint REST requests require a full SharePoint URL.
+The SharePoint token audience is the URL origin, such as
+`https://contoso.sharepoint.com` for
+`https://contoso.sharepoint.com/sites/site/_api/web`. BAP paths are rooted at
 `/providers/Microsoft.BusinessAppPlatform` with default
 `api-version=2020-10-01`. Power Apps paths are rooted at
 `/providers/Microsoft.PowerApps` with default `api-version=2016-11-01`; the
@@ -307,6 +321,44 @@ localhost port if needed.
 
 LAN mode requires `--pair`; use it only on a trusted network.
 
+### Temporary Access Tokens
+
+The UI can hold short-lived pasted browser bearer tokens for APIs that `pp`
+cannot acquire directly, such as some SharePoint resources. In the UI, go to
+`Setup -> Advanced -> Temporary Access Tokens`, paste the bearer token, and
+choose how it should match requests:
+
+- Infer from token audience
+- URL origin, such as `https://contoso.sharepoint.com`
+- pp API, such as `graph`
+- Token audience
+
+The token stays only in the running UI server process. It is not written to
+`config.json`, and it disappears when the UI server exits or the user clicks
+`Forget`. The UI shows decoded JWT metadata such as `aud`, subject, scopes,
+roles, and expiry, but never shows the token value again.
+
+To use a UI-held token from the CLI, route the request through the running UI
+server:
+
+```sh
+pp request --via-ui --temp-token sharepoint custom https://contoso.sharepoint.com/sites/site/_api/web --env <alias>
+```
+
+`--via-ui` reads the UI state file, authenticates to the localhost UI server with
+the per-session CLI secret, and asks the UI server to execute the request. Use
+`--temp-token NAME` when possible so the intended token is explicit. Without
+`--temp-token`, the UI server may auto-match a non-expired temporary token by
+the request API/origin.
+
+The URL origin is the scheme plus host plus optional port only. For
+`https://contoso.sharepoint.com/sites/foo/_api/web`, the origin is
+`https://contoso.sharepoint.com`.
+
+Prefer this flow for browser-only access gaps. Prefer normal `pp auth login`,
+`--env-token`, or `--static-token` when a reusable CLI account is actually
+desired.
+
 ## MCP Server
 
 ```sh
@@ -319,7 +371,7 @@ Default MCP tool names are dotted:
 
 - `pp.account.list`, `pp.account.inspect`, `pp.account.login`, `pp.account.remove`
 - `pp.environment.list`, `pp.environment.inspect`, `pp.environment.add`, `pp.environment.discover`, `pp.environment.remove`
-- `pp.request`, `pp.dv_request`, `pp.flow_request`, `pp.graph_request`, `pp.bap_request`, `pp.powerapps_request`
+- `pp.request`, `pp.dv_request`, `pp.flow_request`, `pp.graph_request`, `pp.sharepoint_request`, `pp.bap_request`, `pp.powerapps_request`
 - `pp.whoami`, `pp.ping`, `pp.token`
 
 Use `--tool-name-style underscore` for clients that reject dotted tool names,
@@ -345,6 +397,10 @@ Most commands passively check for update notices in the background. `mcp`,
 - `pp request` and API shortcuts now return `{ request, response, status,
   headers }`; update old scripts that read `.body` to read `.response`.
 - The old `pp dv request <path>` style is gone; use `pp dv <path>`.
+- Graph and SharePoint are account-scoped and can use `--account` without
+  `--env`; environment-scoped APIs still require `--env`.
+- `pp sharepoint` and `pp sp` require full SharePoint REST URLs and authenticate
+  to the SharePoint origin.
 - Flow, BAP, and Power Apps add default `api-version` query values
   automatically. Passing the same query key overrides the default.
 - For read-only environment aliases, pass `--read` only when a POST is known to
@@ -353,6 +409,10 @@ Most commands passively check for update notices in the background. `mcp`,
   void` for deletes, trigger calls, or endpoints where the body is irrelevant.
 - `--body` parses JSON; use `--raw-body` for XML, text, or already encoded
   payloads.
+- UI temporary access tokens require a running `pp ui` instance and CLI requests
+  must opt in with `--via-ui`. Treat pasted tokens like passwords: never ask the
+  user to paste one into chat, never log one, and prefer matching by exact URL
+  origin for SharePoint.
 
 ## Keeping This Skill Current
 
