@@ -20,8 +20,8 @@ same request options as the CLI, including `jq`, `readIntent`, `rawBody`,
 `responseType`, and `allowInteractiveAuth`.
 
 Use the CLI when the user asks for terminal commands, when MCP tools are not
-available, or for commands not exposed by MCP such as `pp ui`, `pp flow
-validate`, and `pp canvas-authoring yaml fetch --out`.
+available, or for commands not exposed by MCP such as `pp ui` and
+`pp canvas-authoring yaml fetch --out`.
 
 ## Invocation
 
@@ -180,7 +180,9 @@ on Windows, prefix commands with `MSYS_NO_PATHCONV=1` when paths beginning with
 
 ## Power Automate
 
-`pp flow` is both a Flow API shortcut and a workflow-definition analyzer.
+`pp flow` is a Flow API request shortcut. It does not wrap workflow-definition
+inspection or validation behind custom CLI verbs; agents should construct the
+canonical Flow API requests directly.
 
 API examples:
 
@@ -200,14 +202,149 @@ For non-standard Flow URLs under `https://api.flow.microsoft.com/providers/...`,
 pass the full URL with `pp flow <url>` or `pp request flow <url>` so pp keeps
 the Flow auth resource but does not prepend the environment path.
 
-Flow definition helpers:
+For canonical Power Automate definition validation, call the Flow service
+validation endpoints with the candidate flow payload. Use the existing flow id
+when validating an update; for pre-create checks, the all-zero flow id has been
+observed to work with the same request shape.
 
 ```sh
-pp flow validate workflow.json
-pp flow inspect workflow.json
-pp flow symbols workflow.json
-pp flow explain workflow.json --symbol <action-or-trigger-name>
+pp flow /flows/<flow-id>/checkFlowErrors --env <alias> --method POST --body-file payload.json
+pp flow /flows/<flow-id>/checkFlowWarnings --env <alias> --method POST --body-file payload.json
+pp flow /flows/00000000-0000-0000-0000-000000000000/checkFlowErrors --env <alias> --method POST --body-file payload.json
+pp flow /flows/00000000-0000-0000-0000-000000000000/checkFlowWarnings --env <alias> --method POST --body-file payload.json
 ```
+
+The validation body should use the Power Automate service shape, not a bare
+workflow definition: `{"properties":{"definition":...,"connectionReferences":{},"displayName":...}}`.
+
+For connector and operation metadata, prefer the catalog endpoints rather than
+hard-coded connector schemas:
+
+```sh
+pp flow /operationGroups --env <alias> --method POST --body '{"searchText":"","visibleHideKeys":[],"usage":"Action","allTagsToInclude":[],"anyTagsToExclude":["ToS","Agentic"]}'
+pp flow /operations --env <alias> --method POST --query '$top=250' --body '{"searchText":"","visibleHideKeys":[],"allTagsToInclude":["Action","Important"],"anyTagsToExclude":["Deprecated","Agentic","Trigger"]}'
+pp flow /operationGroups/<group>/operations/<operation> --env <alias>
+pp flow /apis/<connector>/apiOperations/<operation> --env <alias>
+pp flow /apis/<connector> --env <alias>
+```
+
+### Creating And Activating Solution Cloud Flows
+
+For solution cloud flows, prefer the supported Dataverse `workflow` table over
+raw `api.flow.microsoft.com` `/flows` creation. Microsoft documents
+`api.flow.microsoft.com` as unsupported for code-based solution flow management;
+use Dataverse Web API or the management connectors instead.
+
+Create the flow with Dataverse:
+
+```sh
+pp dv /workflows --env <alias> --method POST --header 'Prefer:return=representation' --body-file create-flow.json
+```
+
+Minimum create payload:
+
+```json
+{
+  "category": 5,
+  "name": "My scheduled Dataverse probe",
+  "type": 1,
+  "primaryentity": "none",
+  "clientdata": "{\"properties\":{\"connectionReferences\":{},\"definition\":{}},\"schemaVersion\":\"1.0.0.0\"}"
+}
+```
+
+`category: 5` means Modern Flow, `type: 1` means Definition, and
+`primaryentity: "none"` is used for automated, instant, and scheduled cloud
+flows. `clientdata` is a JSON string containing `properties.definition` and
+`properties.connectionReferences`.
+
+For connector-backed actions in solution flows, the connection reference should
+normally point at a Dataverse connection reference logical name, not at the
+concrete API Hub connection name. A Dataverse action reference should look like:
+
+```json
+{
+  "runtimeSource": "embedded",
+  "connection": {
+    "connectionReferenceLogicalName": "new_sharedcommondataserviceforapps_7f348"
+  },
+  "api": {
+    "name": "shared_commondataserviceforapps"
+  }
+}
+```
+
+Do not include `connection.name` in the stored `clientdata` unless you have
+evidence the target endpoint expects it. In live testing, flows created with the
+concrete API Hub connection name could validate and appear installed, but failed
+activation with `InvalidOpenApiFlow` or Flow `/start` returned
+`CannotStartUnpublishedSolutionFlow`.
+
+The workflow definition must include the normal `$connections` and
+`$authentication` parameters, and connector actions should reference the
+connection-reference key through `inputs.host.connectionName`:
+
+```json
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": { "defaultValue": {}, "type": "Object" },
+    "$authentication": { "defaultValue": {}, "type": "SecureObject" }
+  },
+  "triggers": {
+    "Recurrence": {
+      "recurrence": { "frequency": "Day", "interval": 1 },
+      "metadata": { "operationMetadataId": "<uuid>" },
+      "type": "Recurrence"
+    }
+  },
+  "actions": {
+    "List_accounts": {
+      "runAfter": {},
+      "metadata": { "operationMetadataId": "<uuid>" },
+      "type": "OpenApiConnection",
+      "inputs": {
+        "host": {
+          "connectionName": "shared_commondataserviceforapps",
+          "operationId": "ListRecords",
+          "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
+        },
+        "parameters": { "entityName": "accounts", "$top": 1 },
+        "authentication": "@parameters('$authentication')"
+      }
+    }
+  }
+}
+```
+
+Activate with Dataverse, not Flow `/start`:
+
+```sh
+pp dv '/workflows(<workflowid>)' --env <alias> --method PATCH --body '{"statecode":1}' --response-type void
+```
+
+After activation, verify through the Flow API:
+
+```sh
+pp flow /flows/<workflowid> --env <alias> --jq '{name, resourceId:.properties.resourceId, state:.properties.state, installationStatus:.properties.installationStatus, installed:.properties.installedConnectionReferences}'
+```
+
+A successfully activated connector-backed flow should report `state: "Started"`,
+`installationStatus: "Installed"`, a non-empty `resourceId`, and
+`installedConnectionReferences.*.impersonation.objectId`. If `resourceId` is
+set, runtime operations such as trigger `run` and run history may need the
+runtime id rather than the Dataverse `workflowid`:
+
+```sh
+pp flow /flows/<resourceId>/triggers/Recurrence/run --env <alias> --method POST --response-type void
+pp flow '/flows/<resourceId>/runs?$top=5' --env <alias>
+```
+
+`PvaShareConnection` is an internal Dataverse action on `connectionreference`;
+do not rely on it for ordinary flow activation. If it returns a permission error
+for the same caller that owns the API Hub connection, treat that as a sign the
+wrong activation path is being used rather than as a missing share to fix.
 
 For run investigations, inspect both `/runs` and trigger histories. Polling
 triggers may show useful state in
