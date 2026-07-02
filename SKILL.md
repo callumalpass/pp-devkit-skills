@@ -143,6 +143,9 @@ Common flags:
 - `--jq-max-output-bytes BYTES`
 - `--format json|yaml|text`
 - `--read`
+- `--no-log`
+- `--log-results`
+- `--no-log-results`
 - `--no-interactive-auth`
 
 `--query K=V` and `--query-json '{"key":"value"}'` both map to the MCP
@@ -171,6 +174,60 @@ Dataverse, Flow, BAP, Power Apps, Canvas Authoring, and custom requests are
 environment-scoped and require `--env`. Graph and SharePoint are account-scoped:
 use `--account` directly, or pass `--env` as a shorthand for the environment's
 configured account.
+
+## Query Logging
+
+`pp` writes a JSONL query log for explicit request surfaces by default: CLI
+request commands and API aliases, MCP request tools, and Desktop requests that
+opt into the shared request executor. Passive update checks, health checks,
+setup loads, and other background traffic should not be treated as query-log
+content.
+
+The log lives in the shared config directory:
+
+- Linux/macOS: `$XDG_CONFIG_HOME/pp/query-log.jsonl` or `~/.config/pp/query-log.jsonl`
+- Windows: `%APPDATA%\pp\query-log.jsonl`
+- `--config-dir DIR` changes the log path to `DIR/query-log.jsonl`
+
+The active file rotates to `query-log.jsonl.1` at 25 MiB by default. Entries
+include timestamp, source, API, method, environment/account, redacted path,
+query, headers, prepared request metadata, status, elapsed time, and
+diagnostics. Names that look like auth headers, cookies, tokens, secrets,
+passwords, API keys, client secrets, or session ids are redacted before writing.
+
+Default capture policy is metadata-only:
+
+```json
+{
+  "settings": {
+    "queryLog": {
+      "enabled": true,
+      "captureResults": false,
+      "captureRequestBody": false,
+      "maxResultBytes": 262144,
+      "maxFileBytes": 26214400
+    }
+  }
+}
+```
+
+Use `--no-log` when a one-off CLI request should not write query-log metadata.
+Use `--log-results` to capture a redacted response preview for that CLI request,
+and `--no-log-results` to suppress response capture even when global settings
+enable it. CLI request bodies are captured only through global settings, not a
+per-command body flag.
+
+MCP request tools use `log: false` to opt out for one request and
+`logResults: true` or `false` to override response capture for that request.
+When `logResults` is omitted, the saved `settings.queryLog.captureResults`
+value applies.
+
+PP Desktop has a Log tab with the settings editor, clear action, filterable
+entry list, and detail panel. The Desktop settings toggles save the shared
+`settings.queryLog` values, so they affect later CLI, MCP, and Desktop
+requests that do not pass a per-request override. The Log detail view can show
+stored response and request-body previews only for entries captured while the
+corresponding setting or override was enabled.
 
 ## Dataverse
 
@@ -482,6 +539,10 @@ Automate, Apps, Platform, and related investigation workflows. It shares the
 same config and auth cache as the CLI, Setup Manager, and MCP server. Launch
 it from the installed app bundle or packaged desktop archive; there is no
 `pp desktop` CLI subcommand.
+
+Use the Desktop Log tab to inspect stored query-log entries and edit logging
+settings. The Console can also force result capture on for a single request
+without changing the global settings.
 
 ## MCP Server
 
