@@ -1,14 +1,11 @@
 ---
 name: pp
-description: Use pp, the Microsoft Power Platform CLI/MCP/UI, for account auth, environment management, Dataverse, Power Automate, Microsoft Graph, SharePoint REST, BAP, Power Apps, Canvas Authoring, jq-filtered API requests, and Power Platform investigation workflows. Trigger when the user mentions pp, Power Platform APIs, Dataverse, Power Automate flows, SharePoint REST, Canvas apps, Power Apps authoring, or asks to query/inspect/mutate a configured environment.
+description: Use pp, the Microsoft Power Platform CLI/MCP/Desktop/Setup Manager toolchain, for account auth, environment management, Dataverse, Power Automate, Microsoft Graph, SharePoint REST, BAP, Power Apps, Canvas Authoring, jq-filtered API requests, and Power Platform investigation workflows. Trigger when the user mentions pp, Power Platform APIs, Dataverse, Power Automate flows, SharePoint REST, Canvas apps, Power Apps authoring, or asks to query/inspect/mutate a configured environment.
 ---
 
 # pp
 
-`pp` is a Node 22+ CLI, library, MCP server, and localhost UI for Microsoft
-Power Platform work. It provides authenticated requests against Dataverse, Power
-Automate, Microsoft Graph, SharePoint REST, BAP, Power Apps, and the internal
-Canvas Authoring service.
+`pp` is a Node 22+ CLI, library, MCP server, lightweight Setup Manager, and Electron desktop app for Microsoft Power Platform work. It provides authenticated requests against Dataverse, Power Automate, Microsoft Graph, SharePoint REST, BAP, Power Apps, and the internal Canvas Authoring service.
 
 Source repo on this machine: `/home/calluma/projects/pp`.
 
@@ -17,25 +14,25 @@ Source repo on this machine: `/home/calluma/projects/pp`.
 If pp MCP tools are available in the current assistant, prefer them for account,
 environment, and API requests. They avoid shell quoting problems and support the
 same request options as the CLI, including `jq`, `readIntent`, `rawBody`,
-`responseType`, and `allowInteractiveAuth`.
+`responseType`, `query`, and `allowInteractiveAuth`.
 
-Use the CLI when the user asks for terminal commands, when MCP tools are not
-available, or for commands not exposed by MCP such as `pp ui` and
-`pp canvas-authoring yaml fetch --out`.
+Use the CLI when the user asks for terminal commands, when MCP tools are not available, when the user wants to launch a local host such as `pp setup` or `pp mcp`, or for commands not exposed by MCP such as `pp canvas-authoring yaml fetch --out`.
 
 ## Invocation
 
 ```sh
 pp --version
-npx pp --help
+pp --help
+pp-setup --help
 node /home/calluma/projects/pp/dist/index.cjs --help
 ```
 
-The npm package exposes:
+Installed entry points expose:
 
 - `pp` - full CLI
 - `pp-mcp` - MCP server entry point
-- `pp-ui` - browser UI launcher
+- `pp-setup` - browser Setup Manager launcher
+- `PP Desktop` - Electron app packaged separately from the CLI binaries
 
 From source:
 
@@ -47,8 +44,7 @@ pnpm build
 
 ## Config Model
 
-`pp` stores accounts, environments, UI state, MSAL cache, browser profiles, and
-Canvas sessions in a global config directory.
+`pp` stores accounts, environments, MSAL cache, browser profiles, and Canvas sessions in a global config directory. PP Desktop, Setup Manager, CLI, and MCP all share this config and auth state.
 
 - Linux/macOS default: `$XDG_CONFIG_HOME/pp` or `~/.config/pp`
 - Windows default: `%APPDATA%\pp`
@@ -134,20 +130,38 @@ Common flags:
 
 - `--method GET|POST|PATCH|DELETE`
 - `--query K=V` repeated
+- `--query-json JSON` for a shell-friendly equivalent of the MCP `query` object
 - `--header 'Name: value'` repeated
 - `--body JSON` or `--body-file FILE` for JSON bodies
 - `--raw-body TEXT` or `--raw-body-file FILE` for non-JSON bodies
 - `--response-type json|text|void`
 - `--timeout-ms MS`
 - `--jq EXPR`
+- `--jq-raw`
+- `--jq-scope response|envelope`
+- `--jq-timeout-ms MS`
+- `--jq-max-output-bytes BYTES`
 - `--format json|yaml|text`
 - `--read`
-- `--via-ui`
-- `--temp-token NAME`
 - `--no-interactive-auth`
 
+`--query K=V` and `--query-json '{"key":"value"}'` both map to the MCP
+`query` object. Repeated `--query` flags override matching keys from
+`--query-json`.
+
 `--jq` runs in-process with jq-wasm; use API-native `$select`, `$filter`, and
-`$top` first, then use `--jq` to reshape returned JSON.
+`$top` first, then use `--jq` to reshape returned JSON. By default, jq sees
+only the API response body and pp keeps its normal `{ request, response, status,
+headers }` envelope with `response` replaced by the jq output. Use
+`--jq-scope envelope` when jq should see the whole pp envelope and return jq's
+output directly.
+
+MCP request tools accept the same concepts as structured JSON: `query:
+{"$top":"50"}` and `jq` as either a string or an object such as
+`{"expr": ".value[].name", "raw": true, "scope": "response",
+"timeoutMs": 2000, "maxOutputBytes": 50000}`. Use `scope: "envelope"` for
+expressions like `{status, rows: .response.value}` that need status, headers,
+or request metadata.
 
 Absolute URLs are allowed for all APIs. If no API is specified, pp auto-detects
 Graph, SharePoint, Power Apps, Canvas Authoring, BAP, Flow, Dataverse API URLs,
@@ -442,59 +456,32 @@ pp request custom https://prod-xx.logic.azure.com/workflows/... --env <alias> --
 The auth resource for `custom` is the URL origin. For anonymous pre-signed URLs,
 `curl` may be simpler.
 
-## UI
+## Setup Manager
 
 ```sh
-pp ui
-pp ui --port 4734
-pp ui --no-open
-pp ui --lan --pair --no-open
+pp setup
+pp setup --port 4734
+pp setup --no-open
+pp setup --idle-timeout-ms 600000
+pp-setup --help
 ```
 
-The UI manages accounts/environments, checks setup, explores Dataverse metadata,
-runs OData and FetchXML queries, and tracks long-running jobs. `pp ui` reuses an
-existing server for the same config dir when possible and falls back to another
-localhost port if needed.
+Setup Manager is the lightweight local browser surface for account management,
+environment management, access checks, and MCP setup guidance. It does not
+include the Console, Dataverse, Automate, Apps, Canvas, or Platform
+workspaces.
 
-LAN mode requires `--pair`; use it only on a trusted network.
+Setup Manager binds to `127.0.0.1`, uses a random port by default, and
+requires a random per-run token for API requests. There is no LAN mode,
+pairing flow, or `pp ui` compatibility path.
 
-### Temporary Access Tokens
+## Desktop App
 
-The UI can hold short-lived pasted browser bearer tokens for APIs that `pp`
-cannot acquire directly, such as some SharePoint resources. In the UI, go to
-`Setup -> Advanced -> Temporary Access Tokens`, paste the bearer token, and
-choose how it should match requests:
-
-- Infer from token audience
-- URL origin, such as `https://contoso.sharepoint.com`
-- pp API, such as `graph`
-- Token audience
-
-The token stays only in the running UI server process. It is not written to
-`config.json`, and it disappears when the UI server exits or the user clicks
-`Forget`. The UI shows decoded JWT metadata such as `aud`, subject, scopes,
-roles, and expiry, but never shows the token value again.
-
-To use a UI-held token from the CLI, route the request through the running UI
-server:
-
-```sh
-pp request --via-ui --temp-token sharepoint custom https://contoso.sharepoint.com/sites/site/_api/web --env <alias>
-```
-
-`--via-ui` reads the UI state file, authenticates to the localhost UI server with
-the per-session CLI secret, and asks the UI server to execute the request. Use
-`--temp-token NAME` when possible so the intended token is explicit. Without
-`--temp-token`, the UI server may auto-match a non-expired temporary token by
-the request API/origin.
-
-The URL origin is the scheme plus host plus optional port only. For
-`https://contoso.sharepoint.com/sites/foo/_api/web`, the origin is
-`https://contoso.sharepoint.com`.
-
-Prefer this flow for browser-only access gaps. Prefer normal `pp auth login`,
-`--env-token`, or `--static-token` when a reusable CLI account is actually
-desired.
+PP Desktop is the full Electron workspace for Setup, Console, Dataverse,
+Automate, Apps, Platform, and related investigation workflows. It shares the
+same config and auth cache as the CLI, Setup Manager, and MCP server. Launch
+it from the installed app bundle or packaged desktop archive; there is no
+`pp desktop` CLI subcommand.
 
 ## MCP Server
 
@@ -546,10 +533,11 @@ Most commands passively check for update notices in the background. `mcp`,
   void` for deletes, trigger calls, or endpoints where the body is irrelevant.
 - `--body` parses JSON; use `--raw-body` for XML, text, or already encoded
   payloads.
-- UI temporary access tokens require a running `pp ui` instance and CLI requests
-  must opt in with `--via-ui`. Treat pasted tokens like passwords: never ask the
-  user to paste one into chat, never log one, and prefer matching by exact URL
-  origin for SharePoint.
+- `pp` is not published on npm; do not suggest `npx pp`. Use the installed
+  binaries, packaged desktop app, or the source checkout directly.
+- There is no `pp ui` or `pp-ui`; use `pp setup` / `pp-setup` for the
+  lightweight browser setup surface and PP Desktop for full graphical
+  workspaces.
 
 ## Keeping This Skill Current
 
